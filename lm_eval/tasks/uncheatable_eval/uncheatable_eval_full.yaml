@@ -16,13 +16,13 @@ task:
   - uncheatable_eval_ao3_chinese
 aggregate_metric_list:
   - metric: word_perplexity
-    aggregation: weighted_perplexity
-    higher_is_better: false
+    aggregation: mean
+    weight_by_size: true
   - metric: byte_perplexity
-    aggregation: weighted_perplexity
-    higher_is_better: false
+    aggregation: mean
+    weight_by_size: true
   - metric: bits_per_byte
-    aggregation: bits_per_byte
-    higher_is_better: false
+    aggregation: mean
+    weight_by_size: true
 metadata:
   version: 1.0
