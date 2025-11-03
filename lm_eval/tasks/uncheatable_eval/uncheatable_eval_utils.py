@@ -90,6 +90,7 @@ def load_uncheatable_eval(
     data_root: Optional[str] = None,
     max_documents: Optional[int] = None,
     shuffle_seed: Optional[int] = None,
+    **_
 ) -> dict:
     """Load Uncheatable Eval documents for lm-evaluation-harness."""
 
