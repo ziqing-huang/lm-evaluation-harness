@@ -1,0 +1,5 @@
+include: _uncheatable_eval_base.yaml
+task: uncheatable_eval_wikipedia_english
+custom_dataset: !function uncheatable_eval_utils.load_uncheatable_eval
+dataset_kwargs:
+  dataset: wikipedia_english
