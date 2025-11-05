@@ -111,7 +111,7 @@ class WhitespaceFilter(Filter):
         def filter_set(inst):
             filtered_resp = []
             for resp in inst:
-                resp = resp.lstrip()
+                resp = resp.strip()
                 filtered_resp.append(resp)
             return filtered_resp
 

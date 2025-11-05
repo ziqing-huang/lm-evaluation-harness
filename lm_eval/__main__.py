@@ -315,6 +315,7 @@ def cli_evaluate(args: Union[argparse.Namespace, None] = None) -> None:
         simple_parse_args_string,
     )
 
+    wandb_logger = None
     if args.wandb_args:
         wandb_args_dict = simple_parse_args_string(args.wandb_args)
         wandb_config_args_dict = simple_parse_args_string(args.wandb_config_args)
@@ -483,6 +484,7 @@ def cli_evaluate(args: Union[argparse.Namespace, None] = None) -> None:
         fewshot_random_seed=args.seed[3],
         confirm_run_unsafe_code=args.confirm_run_unsafe_code,
         metadata=metadata,
+        wandb_logger=wandb_logger if args.wandb_args else None,
         **request_caching_args,
     )
 

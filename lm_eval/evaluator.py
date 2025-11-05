@@ -42,6 +42,7 @@ from lm_eval.utils import (
 if TYPE_CHECKING:
     from lm_eval.api.model import LM
     from lm_eval.api.task import Task
+    from lm_eval.loggers.wandb_logger import WandbLogger
 
 eval_logger = logging.getLogger(__name__)
 
@@ -79,6 +80,7 @@ def simple_evaluate(
     fewshot_random_seed: int = 1234,
     confirm_run_unsafe_code: bool = False,
     metadata: Optional[dict] = None,
+    wandb_logger: Optional["WandbLogger"] = None,
 ):
     """Instantiate and evaluate a model on a list of tasks.
 
@@ -143,6 +145,8 @@ def simple_evaluate(
         Random seed for fewshot sampler random generator. If set to None, the seed of generator will be set to None.
     :param metadata: dict
         Additional metadata to be added to the task manager. Will get passed to the download function of the task.
+    :param wandb_logger: Optional[WandbLogger]
+        Logger used to stream incremental results to Weights & Biases while evaluation runs.
     return
         Dictionary of results
     """
@@ -369,6 +373,7 @@ def simple_evaluate(
         fewshot_as_multiturn=fewshot_as_multiturn,
         verbosity=verbosity,
         confirm_run_unsafe_code=confirm_run_unsafe_code,
+        wandb_logger=wandb_logger,
     )
     if verbosity is not None:
         setup_logging(verbosity=verbosity)
@@ -432,6 +437,7 @@ def evaluate(
     fewshot_as_multiturn: bool = False,
     verbosity: str = "INFO",
     confirm_run_unsafe_code: bool = False,
+    wandb_logger: Optional["WandbLogger"] = None,
 ):
     """Instantiate and evaluate a model on a list of tasks.
 
@@ -466,6 +472,8 @@ def evaluate(
         Verbosity level for logging
     :param confirm_run_unsafe_code: bool
         Whether to confirm running tasks marked as unsafe.
+    :param wandb_logger: Optional[WandbLogger]
+        Logger used to stream incremental results to Weights & Biases while evaluation runs.
     :return
         Dictionary of results
     """
@@ -696,6 +704,8 @@ def evaluate(
         # aggregate results ; run bootstrap CIs
         for task_output in eval_tasks:
             task_output.calculate_aggregate_metric(bootstrap_iters=bootstrap_iters)
+            if wandb_logger is not None:
+                wandb_logger.log_task_incremental(task_output)
         (
             results,
             samples,

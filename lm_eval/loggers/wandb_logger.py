@@ -1,13 +1,16 @@
 import copy
 import json
 import logging
-from typing import Any, Dict, List, Literal, Tuple
+from typing import TYPE_CHECKING, Any, Dict, List, Literal, Tuple
 
 import numpy as np
 import pandas as pd
 from packaging.version import Version
 
 from lm_eval.loggers.utils import _handle_non_serializable, remove_none_pattern
+
+if TYPE_CHECKING:
+    from lm_eval.evaluator_utils import TaskOutput
 
 
 logger = logging.getLogger(__name__)
@@ -192,6 +195,24 @@ class WandbLogger:
         self._log_results_as_table()
         # Log the results dict as json to W&B Artifacts
         self._log_results_as_artifact()
+
+    def log_task_incremental(self, task_output: "TaskOutput") -> None:
+        """Log aggregate metrics for a single task as soon as they are computed."""
+        payload: Dict[str, Any] = {}
+        task_name = task_output.task_name or "unknown_task"
+
+        for key, value in task_output.agg_metrics.items():
+            metric_key, _, filter_key = key.partition(",")
+            metric_path = f"{task_name}/{metric_key}"
+            if filter_key:
+                metric_path = f"{metric_path}/{filter_key}"
+            payload[metric_path] = value
+
+        if task_output.sample_len is not None:
+            payload[f"{task_name}/samples"] = task_output.sample_len
+
+        if payload:
+            self.run.log(payload, step=self.step)
 
     def _generate_dataset(
         self, data: List[Dict[str, Any]], config: Dict[str, Any]

@@ -2,9 +2,14 @@ import gzip
 import json
 import logging
 import os
+import re
 from itertools import chain
 from pathlib import Path
 from typing import Any, Iterable, Iterator, List, Optional
+
+import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util import Retry
 
 import datasets
 
@@ -31,20 +36,41 @@ LIST_FIELD_CANDIDATES: tuple[str, ...] = (
     "messages",
 )
 
+FILENAME_PATTERN = re.compile(
+    r"^(?P<prefix>.+)_(?P<start>\d{8})to(?P<end>\d{8})(?P<suffix>(?:\.[^.]+)*)$"
+)
+
+AUTO_DOWNLOAD_ENABLED = (
+    os.getenv("UNCHEATABLE_EVAL_DISABLE_DOWNLOAD", "").lower() not in {"1", "true", "yes"}
+)
+
+DEFAULT_CACHE_DIR = Path(
+    os.getenv(
+        "UNCHEATABLE_EVAL_CACHE_DIR",
+        Path.home() / ".cache" / "uncheatable_eval" / "latest",
+    )
+)
+
+GITHUB_REQUEST_TIMEOUT = int(os.getenv("UNCHEATABLE_EVAL_REQUEST_TIMEOUT", "120"))
+
 
 def _resolve_data_root(data_root: Optional[str] = None) -> Path:
     """Return the directory containing Uncheatable Eval dumps."""
 
-    candidates: List[Path] = []
-
     if data_root:
-        candidates.append(Path(data_root))
+        path = Path(data_root).expanduser().resolve()
+        path.mkdir(parents=True, exist_ok=True)
+        return path
 
     env_root = os.getenv("UNCHEATABLE_EVAL_DATA_ROOT") or os.getenv(
         "UNCHEATABLE_EVAL_ROOT"
     )
     if env_root:
-        candidates.append(Path(env_root))
+        path = Path(env_root).expanduser().resolve()
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
+    candidates: List[Path] = []
 
     current = Path(__file__).resolve()
     for parent in current.parents:
@@ -78,11 +104,8 @@ def _resolve_data_root(data_root: Optional[str] = None) -> Path:
         if candidate.exists() and candidate.is_dir():
             return candidate
 
-    raise FileNotFoundError(
-        "Unable to locate Uncheatable Eval data directory. Set `data_root` in the task "
-        "config or export `UNCHEATABLE_EVAL_DATA_ROOT` to point at the directory that "
-        "contains the normalized JSONL files such as `wikipedia_english_*.jsonl.gz`."
-    )
+    DEFAULT_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    return DEFAULT_CACHE_DIR.resolve()
 
 
 def load_uncheatable_eval(
@@ -95,18 +118,40 @@ def load_uncheatable_eval(
     """Load Uncheatable Eval documents for lm-evaluation-harness."""
 
     root = _resolve_data_root(data_root)
-    patterns = [
-        f"{dataset}_*.jsonl.gz",
-        f"{dataset}_*.jsonl",
-        f"{dataset}_*.json",
-    ]
-    files = list(
-        chain.from_iterable(sorted(root.glob(pattern)) for pattern in patterns)
-    )
+    files = _find_dataset_files(dataset, root)
     if not files:
-        raise FileNotFoundError(
-            f"No Uncheatable Eval files found for prefix '{dataset}' in {root}."
-        )
+        download_error: Optional[Exception] = None
+        if AUTO_DOWNLOAD_ENABLED:
+            try:
+                LOGGER.info(
+                    "No local Uncheatable Eval files for '%s' in %s. Attempting download.",
+                    dataset,
+                    root,
+                )
+                _download_latest_dataset(dataset, root)
+            except Exception as exc:  # noqa: BLE001 - propagate as informative error
+                download_error = exc
+                LOGGER.warning(
+                    "Automatic download for '%s' failed: %s",
+                    dataset,
+                    exc,
+                )
+        files = _find_dataset_files(dataset, root)
+        if not files:
+            message = (
+                f"No Uncheatable Eval files found for prefix '{dataset}' in {root}."
+            )
+            if AUTO_DOWNLOAD_ENABLED and download_error is not None:
+                raise FileNotFoundError(
+                    message
+                    + " Automatic download from GitHub failed; inspect the logs above."
+                ) from download_error
+            if not AUTO_DOWNLOAD_ENABLED:
+                message += (
+                    " Automatic download is disabled. Set UNCHEATABLE_EVAL_DISABLE_DOWNLOAD=0"
+                    " or download the dumps manually."
+                )
+            raise FileNotFoundError(message)
 
     records = list(_iter_dataset_records(files))
     if not records:
@@ -133,6 +178,17 @@ def load_uncheatable_eval(
     )
 
     return {"test": dataset_obj}
+
+
+def _find_dataset_files(dataset: str, root: Path) -> List[Path]:
+    patterns = [
+        f"{dataset}_*.jsonl.gz",
+        f"{dataset}_*.jsonl",
+        f"{dataset}_*.json",
+    ]
+    return list(
+        chain.from_iterable(sorted(root.glob(pattern)) for pattern in patterns)
+    )
 
 
 def _iter_dataset_records(files: Iterable[Path]) -> Iterator[dict[str, str]]:
@@ -217,6 +273,109 @@ def _join_list_field(value: Any) -> Optional[str]:
         if text_items:
             return "\n".join(text_items)
     return None
+
+
+def _download_latest_dataset(dataset: str, root: Path) -> List[Path]:
+    owner = os.getenv("UNCHEATABLE_EVAL_REPO_OWNER", "Jellyfish042")
+    repo = os.getenv("UNCHEATABLE_EVAL_REPO_NAME", "uncheatable_eval")
+    data_path = os.getenv("UNCHEATABLE_EVAL_DATA_PATH", "data")
+    branch = os.getenv("UNCHEATABLE_EVAL_BRANCH", "master")
+
+    session = _github_session()
+    headers = _github_headers()
+    url = f"https://api.github.com/repos/{owner}/{repo}/contents/{data_path}"
+
+    response = session.get(
+        url, headers=headers, params={"ref": branch}, timeout=GITHUB_REQUEST_TIMEOUT
+    )
+    response.raise_for_status()
+
+    payload = response.json()
+    if not isinstance(payload, list):
+        raise ValueError(
+            f"Unexpected response from GitHub when listing {owner}/{repo}/{data_path}: {payload!r}"
+        )
+
+    candidate = _select_latest_entry(payload, dataset)
+    if candidate is None:
+        raise FileNotFoundError(
+            f"Could not locate remote dump for '{dataset}' in {owner}/{repo}/{data_path}."
+        )
+
+    download_url = candidate.get("download_url")
+    if not isinstance(download_url, str):
+        raise ValueError(
+            f"Entry for {candidate.get('name')} is missing a download_url field."
+        )
+
+    root.mkdir(parents=True, exist_ok=True)
+    target_path = root / candidate["name"]
+    if target_path.exists():
+        LOGGER.info("Found previously downloaded file %s", target_path)
+        return [target_path]
+
+    LOGGER.info(
+        "Downloading latest Uncheatable Eval dump for '%s' from %s",
+        dataset,
+        download_url,
+    )
+    download_headers = headers.copy()
+    # For raw file downloads ensure we accept the content as-is.
+    download_headers.pop("Accept", None)
+    response = session.get(
+        download_url, headers=download_headers, timeout=GITHUB_REQUEST_TIMEOUT
+    )
+    response.raise_for_status()
+
+    if target_path.suffix == ".gz":
+        target_path.write_bytes(response.content)
+    else:
+        target_path.write_text(response.text, encoding="utf-8")
+
+    LOGGER.info("Wrote %s", target_path)
+    return [target_path]
+
+
+def _select_latest_entry(entries: List[dict[str, Any]], dataset: str) -> Optional[dict]:
+    best_entry: Optional[dict] = None
+    best_key: Optional[tuple[str, str, str]] = None
+    prefix = f"{dataset}_"
+    for entry in entries:
+        name = entry.get("name")
+        if not isinstance(name, str) or not name.startswith(prefix):
+            continue
+        match = FILENAME_PATTERN.match(name)
+        if match is None:
+            continue
+        end = match.group("end")
+        start = match.group("start")
+        key = (end, start, name)
+        if best_key is None or key > best_key:
+            best_entry = entry
+            best_key = key
+    return best_entry
+
+
+def _github_session() -> requests.Session:
+    session = requests.Session()
+    retries = Retry(
+        total=5,
+        backoff_factor=1.0,
+        status_forcelist=[429, 500, 502, 503, 504],
+        allowed_methods=["GET"],
+    )
+    adapter = HTTPAdapter(max_retries=retries)
+    session.mount("https://", adapter)
+    session.mount("http://", adapter)
+    return session
+
+
+def _github_headers() -> dict[str, str]:
+    headers = {"Accept": "application/vnd.github+json"}
+    token = os.getenv("UNCHEATABLE_EVAL_GITHUB_TOKEN") or os.getenv("GITHUB_TOKEN")
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    return headers
 
 
 __all__ = ["load_uncheatable_eval"]
