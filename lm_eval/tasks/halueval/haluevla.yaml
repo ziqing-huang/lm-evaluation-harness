@@ -1,0 +1,8 @@
+group: haluevla
+group_alias: HaluEval
+task:
+  - task: halueval_dialogue
+  - task: halueval_qa
+  - task: halueval_summarization
+metadata:
+  version: 0.0
