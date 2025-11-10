@@ -1,5 +1,5 @@
 task: wsc273
-dataset_path: winograd_wsc
+dataset_path: ziqinghuang/winograd_wsc_parquet
 dataset_name: wsc273
 output_type: multiple_choice
 test_split: test
