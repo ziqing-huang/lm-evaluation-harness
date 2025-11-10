@@ -1,4 +1,4 @@
-group: haluevla
+group: halueval
 group_alias: HaluEval
 task:
   - task: halueval_dialogue
